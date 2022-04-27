@@ -59,6 +59,31 @@ define Build/iodata-mstc-header
 	)
 endef
 
+define Build/sercomm-tag-factory
+	$(eval magic_const=$(word 1,$(1)))
+	dd if=/dev/zero count=$$((0x200)) bs=1 of=$@.head 2>/dev/null
+	dd if=/dev/zero count=$$((0x70)) bs=1 2>/dev/null | tr '\000' '0' | \
+		dd of=$@.head conv=notrunc 2>/dev/null
+	printf $(SERCOMM_HWVER) | dd of=$@.head bs=1 conv=notrunc 2>/dev/null
+	printf $(SERCOMM_HWID) | dd of=$@.head bs=1 seek=$$((0x8)) conv=notrunc 2>/dev/null
+	printf $(SERCOMM_SWVER) | dd of=$@.head bs=1 seek=$$((0x64)) conv=notrunc \
+		2>/dev/null
+	dd if=$(IMAGE_KERNEL) skip=$$((0x100)) iflag=skip_bytes 2>/dev/null of=$@.clrkrn
+	dd if=$(IMAGE_KERNEL) count=$$((0x100)) iflag=count_bytes 2>/dev/null of=$@.hdrkrn0
+	dd if=/dev/zero count=$$((0x100)) iflag=count_bytes 2>/dev/null of=$@.hdrkrn1
+	wc -c < $@.clrkrn | tr -d '\n' | dd of=$@.head bs=1 seek=$$((0x70)) \
+		conv=notrunc 2>/dev/null
+	stat -c%s $@ | tr -d '\n' | dd of=$@.head bs=1 seek=$$((0x80)) \
+		conv=notrunc 2>/dev/null
+	printf $(magic_const) | dd of=$@.head bs=1 seek=$$((0x90)) conv=notrunc 2>/dev/null
+	cat $@.clrkrn $@ | md5sum | awk '{print $$1;}' | tr -d '\n' | dd of=$@.head bs=1 \
+	seek=$$((0x1e0)) conv=notrunc 2>/dev/null
+	cat $@.head $@.hdrkrn0 $@.hdrkrn1 $@.clrkrn $@ > $@.new
+	mv $@.new $@
+	rm $@.head $@.clrkrn
+endef
+
+
 define Build/ubnt-erx-factory-image
 	if [ -e $(KDIR)/tmp/$(KERNEL_INITRAMFS_IMAGE) -a "$$(stat -c%s $@)" -lt "$(KERNEL_SIZE)" ]; then \
 		echo '21001:7' > $(1).compat; \
@@ -225,6 +250,35 @@ define Device/asus_rt-n56u-b1
 	kmod-usb-ledtrig-usbport
 endef
 TARGET_DEVICES += asus_rt-n56u-b1
+
+define Device/beeline_smartbox-turbo-plus
+  $(Device/dsa-migration)
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  UBINIZE_OPTS := -E 5
+  KERNEL_SIZE := 6144k
+  IMAGE_SIZE := 32768k
+  KERNEL_LOADADDR := 0x81001000
+  LZMA_TEXT_START := 0x82800000
+  SERCOMM_KERNEL_OFFSET := 0x400100
+  SERCOMM_ROOTFS_OFFSET := 0x1000000
+  KERNEL := kernel-bin | append-dtb | lzma | loader-kernel | \
+  lzma | uImage lzma | sercomm-kernel
+  KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma | loader-kernel | \
+  lzma | uImage lzma
+  LOADER_TYPE := bin
+  IMAGES += factory.img
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  SERCOMM_HWID := 435152
+  SERCOMM_HWVER := 0001
+  SERCOMM_SWVER := 9999
+  IMAGE/factory.img := append-ubi | sercomm-tag-factory
+  DEVICE_VENDOR := Beeline
+  DEVICE_MODEL := SmartBox TURBO+
+  DEVICE_PACKAGES := kmod-mt7603e kmod-mt7615d luci-app-mtwifi \
+	-wpad-openssl kmod-usb3 uboot-envtools
+endef
+TARGET_DEVICES += beeline_smartbox-turbo-plus
 
 define Device/buffalo_wsr-1166dhp
   $(Device/dsa-migration)
@@ -403,13 +457,13 @@ endef
 TARGET_DEVICES += dlink_dir-882-r1
 
 define Device/d-team_newifi-d2
-  $(Device/dsa-migration)
   $(Device/uimage-lzma-loader)
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := Newifi
   DEVICE_MODEL := D2
-  DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3 \
-	kmod-usb-ledtrig-usbport
+  DEVICE_COMPAT_VERSION := 1.1
+  DEVICE_PACKAGES := kmod-mt7603e kmod-mt76x2e kmod-usb3 \
+	kmod-usb-ledtrig-usbport luci-app-mtwifi -wpad-openssl
 endef
 TARGET_DEVICES += d-team_newifi-d2
 
@@ -583,12 +637,11 @@ endef
 TARGET_DEVICES += firefly_firewrt
 
 define Device/gehua_ghl-r-001
-  $(Device/dsa-migration)
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := GeHua
   DEVICE_MODEL := GHL-R-001
-  DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3 \
-	kmod-usb-ledtrig-usbport
+  DEVICE_PACKAGES := kmod-mt7603e kmod-mt76x2e kmod-usb3 \
+	kmod-usb-ledtrig-usbport luci-app-mtwifi -wpad-openssl
 endef
 TARGET_DEVICES += gehua_ghl-r-001
 
@@ -597,7 +650,7 @@ define Device/glinet_gl-mt1300
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := GL.iNet
   DEVICE_MODEL := GL-MT1300
-  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7615-firmware kmod-usb3
+  DEVICE_PACKAGES := kmod-mt7615d_dbdc kmod-usb3 -luci-newapi -wpad-openssl
 endef
 TARGET_DEVICES += glinet_gl-mt1300
 
@@ -618,6 +671,14 @@ define Device/gnubee_gb-pc2
   IMAGE_SIZE := 32448k
 endef
 TARGET_DEVICES += gnubee_gb-pc2
+
+define Device/hilink_hlk-7621a
+  IMAGE_SIZE := 32448k
+  DEVICE_VENDOR := HiLink
+  DEVICE_MODEL := HLK-7621A
+  DEVICE_PACKAGES := kmod-usb3
+endef
+TARGET_DEVICES += hilink_hlk-7621a
 
 define Device/hiwifi_hc5962
   $(Device/dsa-migration)
@@ -760,6 +821,19 @@ define Device/jcg_jhr-ac876m
 endef
 TARGET_DEVICES += jcg_jhr-ac876m
 
+define Device/jcg_jhr-ac945m
+  $(Device/dsa-migration)
+  $(Device/uimage-lzma-loader)
+  IMAGE_SIZE := 16064k
+  IMAGES += factory.bin
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | jcg-header 91.1
+  JCG_MAXSIZE := 16064k
+  DEVICE_VENDOR := JCG
+  DEVICE_MODEL := JHR-AC945M
+  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7615-firmware kmod-usb3
+endef
+TARGET_DEVICES += jcg_jhr-ac945m
+
 define Device/jcg_q20
   $(Device/dsa-migration)
   BLOCKSIZE := 128k
@@ -777,6 +851,12 @@ define Device/jcg_q20
 endef
 TARGET_DEVICES += jcg_q20
 
+define Device/jcg_q20-ubootmod
+  $(Device/jcg_q20)
+  DEVICE_VARIANT := U-Boot mod
+endef
+TARGET_DEVICES += jcg_q20-ubootmod
+
 define Device/jcg_y2
   $(Device/dsa-migration)
   $(Device/uimage-lzma-loader)
@@ -786,7 +866,7 @@ define Device/jcg_y2
   JCG_MAXSIZE := 16064k
   DEVICE_VENDOR := JCG
   DEVICE_MODEL := Y2
-  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7615-firmware kmod-usb3
+  DEVICE_PACKAGES := kmod-mt7615d_dbdc kmod-usb3 -luci-newapi -wpad-openssl
 endef
 TARGET_DEVICES += jcg_y2
 
@@ -1020,7 +1100,6 @@ define Device/netgear_r6220
 endef
 TARGET_DEVICES += netgear_r6220
 
-
 define Device/netgear_r6260
   $(Device/netgear_sercomm_nand)
   DEVICE_MODEL := R6260
@@ -1150,13 +1229,23 @@ define Device/netis_wf2881
 endef
 TARGET_DEVICES += netis_wf2881
 
-define Device/phicomm_k2p
+define Device/oraybox_x3a
   $(Device/dsa-migration)
+  $(Device/uimage-lzma-loader)
+  IMAGE_SIZE := 15360k
+  DEVICE_VENDOR := OrayBox
+  DEVICE_MODEL := X3A
+  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7615-firmware
+endef
+TARGET_DEVICES += oraybox_x3a
+
+define Device/phicomm_k2p
   IMAGE_SIZE := 15744k
   DEVICE_VENDOR := Phicomm
   DEVICE_MODEL := K2P
   SUPPORTED_DEVICES += k2p
-  DEVICE_PACKAGES := kmod-mt7615d_dbdc -luci-newapi -wpad-openssl 
+  DEVICE_COMPAT_VERSION := 1.1
+  DEVICE_PACKAGES := -luci-newapi -wpad-openssl kmod-mt7615d_dbdc wireless-tools
 endef
 TARGET_DEVICES += phicomm_k2p
 
@@ -1170,6 +1259,33 @@ define Device/planex_vr500
   SUPPORTED_DEVICES += vr500
 endef
 TARGET_DEVICES += planex_vr500
+
+define Device/raisecom_msg1500-x-00
+  $(Device/dsa-migration)
+  $(Device/uimage-lzma-loader)
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_SIZE := 4096k
+  IMAGE_SIZE := 129280k
+  UBINIZE_OPTS := -E 5
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  DEVICE_VENDOR := RAISECOM
+  DEVICE_MODEL := MSG1500
+  DEVICE_VARIANT := X.00
+  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7615-firmware kmod-usb3 \
+	kmod-usb-ledtrig-usbport uboot-envtools
+endef
+TARGET_DEVICES += raisecom_msg1500-x-00
+
+define Device/raisecom_msg1500-z-00
+  $(Device/dsa-migration)
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := RAISECOM
+  DEVICE_MODEL := MSG1500
+  DEVICE_VARIANT := Z.00
+  DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3
+endef
+TARGET_DEVICES += raisecom_msg1500-z-00
 
 define Device/samknows_whitebox-v8
   $(Device/dsa-migration)
@@ -1557,7 +1673,8 @@ define Device/xiaomi_mi-router-ac2100
   $(Device/xiaomi_nand_separate)
   DEVICE_MODEL := Mi Router AC2100
   IMAGE_SIZE := 120320k
-  DEVICE_PACKAGES += kmod-mt7603 kmod-mt7615e kmod-mt7615-firmware
+  DEVICE_PACKAGES += kmod-mt7603e kmod-mt7615d luci-app-mtwifi \
+	-wpad-openssl
 endef
 TARGET_DEVICES += xiaomi_mi-router-ac2100
 
@@ -1584,15 +1701,16 @@ define Device/xiaomi_redmi-router-ac2100
   $(Device/xiaomi_nand_separate)
   DEVICE_MODEL := Redmi Router AC2100
   IMAGE_SIZE := 120320k
-  DEVICE_PACKAGES += kmod-mt7603 kmod-mt7615e kmod-mt7615-firmware
+  DEVICE_PACKAGES += kmod-mt7603e kmod-mt7615d luci-app-mtwifi \
+	-wpad-openssl
 endef
 TARGET_DEVICES += xiaomi_redmi-router-ac2100
 
 define Device/xiaoyu_xy-c5
-  $(Device/dsa-migration)
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := XiaoYu
   DEVICE_MODEL := XY-C5
+  DEVICE_COMPAT_VERSION := 1.1
   DEVICE_PACKAGES := kmod-ata-ahci kmod-usb3 -wpad-openssl
 endef
 TARGET_DEVICES += xiaoyu_xy-c5
@@ -1726,3 +1844,22 @@ define Device/zyxel_wap6805
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 TARGET_DEVICES += zyxel_wap6805
+
+define Device/zte_e8820s
+  $(Device/dsa-migration)
+  $(Device/uimage-lzma-loader)
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_SIZE := 4096k
+  UBINIZE_OPTS := -E 5
+  IMAGE_SIZE := 32768k
+  IMAGES += factory.bin
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | \
+	check-size
+  DEVICE_VENDOR := ZTE
+  DEVICE_MODEL := E8820S
+  DEVICE_PACKAGES := kmod-mt7603e kmod-mt76x2e kmod-usb3 \
+	kmod-usb-ledtrig-usbport luci-app-mtwifi
+endef
+TARGET_DEVICES += zte_e8820s
